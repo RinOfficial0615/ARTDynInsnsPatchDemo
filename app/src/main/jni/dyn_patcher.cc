@@ -52,7 +52,7 @@ void make_writable(void *addr, size_t size, const std::function<void(void)>& act
     __builtin___clear_cache((char*)addr, (char*)((uintptr_t)addr + size));
 }
 
-void CommonHook(void *method) {
+void CommonInitializeMethodsCodeHook(void *method) {
     auto jni_short_name = ArtMethod::JniShortName(method);
     auto method_name = ArtMethod::PrettyMethod(method, true);
     if (!method_name.empty() && !jni_short_name.empty()) {
@@ -91,17 +91,21 @@ void (* InitializeMethodsCodeBackup)(void *thiz, void *method, const void *quick
 void InitializeMethodsCodeHook(void *thiz, void *method, const void *quick_code) {
     InitializeMethodsCodeBackup(thiz, method, quick_code);
 
-    CommonHook(method);
+    CommonInitializeMethodsCodeHook(method);
 }
 
 void (* ReinitializeMethodsCodeBackup)(void *thiz, void *method);
 void ReinitializeMethodsCodeHook(void *thiz, void *method) {
     ReinitializeMethodsCodeBackup(thiz, method);
 
-    CommonHook(method);
+    CommonInitializeMethodsCodeHook(method);
 }
 
-std::unordered_map<std::string, std::pair<void*, void**>> InitializeMethodsCodeHooks = {
+int VerifyClassHook() {
+    return 0; // FailureKind::kNoFailure
+}
+
+std::unordered_map<std::string, std::pair<void*, void**>> OurHooks = {
     {
         "_ZN3art15instrumentation15Instrumentation23ReinitializeMethodsCodeEPNS_9ArtMethodE",
         std::make_pair<>(reinterpret_cast<void *>(ReinitializeMethodsCodeHook), reinterpret_cast<void **>(&ReinitializeMethodsCodeBackup))
@@ -110,18 +114,19 @@ std::unordered_map<std::string, std::pair<void*, void**>> InitializeMethodsCodeH
         "_ZN3art15instrumentation15Instrumentation21InitializeMethodsCodeEPNS_9ArtMethodEPKv",
         std::make_pair<>(reinterpret_cast<void *>(InitializeMethodsCodeHook), reinterpret_cast<void **>(&InitializeMethodsCodeBackup))
     },
+    {
+        "_ZN3art8verifier13ClassVerifier11VerifyClassEPNS_6ThreadEPNS0_12VerifierDepsEPKNS_7DexFileENS_6HandleINS_6mirror5ClassEEENS9_INSA_8DexCacheEEENS9_INSA_11ClassLoaderEEERKNS_3dex8ClassDefEPNS_17CompilerCallbacksENS0_15HardFailLogModeEjPNSt3__112basic_stringIcNSO_11char_traitsIcEENSO_9allocatorIcEEEE",
+        std::make_pair<>(reinterpret_cast<void *>(VerifyClassHook), nullptr)
+    },
 };
 
 extern "C"
 JNIEXPORT jint
 JNI_OnLoad(JavaVM *vm, void *) {
-    for (auto& [symbol, handler] : InitializeMethodsCodeHooks) {
-        auto ret = DobbyHook(Sym::ResolveArt(symbol.c_str()),
+    for (auto& [symbol, handler] : OurHooks) {
+        DobbyHook(Sym::ResolveArt(symbol.c_str()),
                   handler.first,
                   handler.second);
-
-        if (ret == 0)
-            break;
     }
 
     return JNI_VERSION_1_6;
@@ -130,11 +135,8 @@ JNI_OnLoad(JavaVM *vm, void *) {
 extern "C"
 JNIEXPORT void JNICALL
 JNI_OnUnLoad(JavaVM *vm, void *) {
-    for (const auto& [symbol, _] : InitializeMethodsCodeHooks) {
-        auto ret = DobbyDestroy(Sym::ResolveArt(symbol.c_str()));
-
-        if (ret == 0)
-            break;
+    for (const auto& [symbol, _] : OurHooks) {
+        DobbyDestroy(Sym::ResolveArt(symbol.c_str()));
     }
 }
 
